@@ -1,5 +1,6 @@
 import argparse
 import os
+from datetime import datetime
 import numpy as np
 from PIL import Image
 
@@ -8,13 +9,15 @@ from chainer import cuda
 import chainer.links as L
 from chainer import optimizers
 from chainer import serializers
-from chainer.functions.loss.mean_squared_error import mean_squared_error
+# from chainer.Functions.loss.mean_squared_error import mean_squared_error
 import net
+from mean_absolute_error import mean_absolute_error
 
-parser = argparse.ArgumentParser(
-description='PredNet')
-parser.add_argument('--images', '-i', default='', help='Path to image list file')
-parser.add_argument('--sequences', '-seq', default='', help='Path to sequence list file')
+parser = argparse.ArgumentParser(description='PredNet')
+parser.add_argument('--images', '-i', default='',
+                    help='Path to image list file')
+parser.add_argument('--sequences', '-seq', default='',
+                    help='Path to sequence list file')
 parser.add_argument('--gpu', '-g', default=-1, type=int,
                     help='GPU ID (negative value indicates CPU)')
 parser.add_argument('--root', '-r', default='.',
@@ -35,17 +38,20 @@ parser.add_argument('--bprop', default=10, type=int,
                     help='Back propagation length (frames)')
 parser.add_argument('--save', default=10000, type=int,
                     help='Period of save model and state (frames)')
+parser.add_argument('--saveimage', '-si', default=100, type=int,
+                    help='Period of save predicted image (frames)')
 parser.add_argument('--period', default=1000000, type=int,
                     help='Period of training (frames)')
 parser.add_argument('--test', dest='test', action='store_true')
 parser.set_defaults(test=False)
 args = parser.parse_args()
 
+log_filename = 'models/loss.csv'
 
 if (not args.images) and (not args.sequences):
     print('Please specify images or sequences')
     exit()
-    
+
 args.size = args.size.split(',')
 for i in range(len(args.size)):
     args.size[i] = int(args.size[i])
@@ -60,9 +66,10 @@ if args.gpu >= 0:
     cuda.check_cuda_available()
 xp = cuda.cupy if args.gpu >= 0 else np
 
-#Create Model
+# Create Model
 prednet = net.PredNet(args.size[0], args.size[1], args.channels)
-model = L.Classifier(prednet, lossfun=mean_squared_error)
+# model = L.Classifier(prednet, lossfun=mean_squared_error)
+model = L.Classifier(prednet, lossfun=mean_absolute_error)
 model.compute_accuracy = False
 optimizer = optimizers.Adam()
 optimizer.setup(model)
@@ -87,6 +94,7 @@ if not os.path.exists('models'):
 if not os.path.exists('images'):
     os.makedirs('images')
 
+
 def load_list(path, root):
     tuples = []
     for line in open(path):
@@ -94,15 +102,17 @@ def load_list(path, root):
         tuples.append(os.path.join(root, pair[0]))
     return tuples
 
+
 def read_image(path):
     image = np.asarray(Image.open(path)).transpose(2, 0, 1)
-    top = args.offset[1] + (image.shape[1]  - args.size[1]) / 2
-    left = args.offset[0] + (image.shape[2]  - args.size[0]) / 2
+    top = args.offset[1] + (image.shape[1] - args.size[1]) / 2
+    left = args.offset[0] + (image.shape[2] - args.size[0]) / 2
     bottom = args.size[1] + top
     right = args.size[0] + left
     image = image[:, top:bottom, left:right].astype(np.float32)
     image /= 255
     return image
+
 
 def write_image(image, path):
     image *= 255
@@ -116,14 +126,16 @@ if args.images:
 else:
     sequencelist = load_list(args.sequences, args.root)
 
-if args.test == True:
+if args.test is True:
     for seq in range(len(sequencelist)):
         imagelist = load_list(sequencelist[seq], args.root)
         prednet.reset_state()
         loss = 0
         batchSize = 1
-        x_batch = np.ndarray((batchSize, args.channels[0], args.size[1], args.size[0]), dtype=np.float32)
-        y_batch = np.ndarray((batchSize, args.channels[0], args.size[1], args.size[0]), dtype=np.float32)
+        image_batch_size = (batchSize, args.channels[0],
+                            args.size[1], args.size[0])
+        x_batch = np.ndarray(image_batch_size, dtype=np.float32)
+        y_batch = np.ndarray(image_batch_size, dtype=np.float32)
         for i in range(0, len(imagelist)):
             print('frameNo:' + str(i))
             x_batch[0] = read_image(imagelist[i])
@@ -131,26 +143,36 @@ if args.test == True:
                           chainer.Variable(xp.asarray(y_batch)))
             loss.unchain_backward()
             loss = 0
-            if args.gpu >= 0:model.to_cpu()
+            if args.gpu >= 0:
+                model.to_cpu()
             write_image(x_batch[0].copy(), 'images/test' + str(i) + 'x.jpg')
-            write_image(model.y.data[0].copy(), 'images/test' + str(i) + 'y.jpg')
-            if args.gpu >= 0:model.to_gpu()
+            write_image(model.y.data[0].copy(),
+                        'images/test' + str(i) + 'y.jpg')
+            if args.gpu >= 0:
+                model.to_gpu()
 
-        if args.gpu >= 0:model.to_cpu()
+        if args.gpu >= 0:
+            model.to_cpu()
         x_batch[0] = model.y.data[0].copy()
-        if args.gpu >= 0:model.to_gpu()
+        if args.gpu >= 0:
+            model.to_gpu()
         for i in range(len(imagelist), len(imagelist) + args.ext):
             print('extended frameNo:' + str(i))
             loss += model(chainer.Variable(xp.asarray(x_batch)),
                           chainer.Variable(xp.asarray(y_batch)))
             loss.unchain_backward()
             loss = 0
-            if args.gpu >= 0:model.to_cpu()
-            write_image(model.y.data[0].copy(), 'images/test' + str(i) + 'y.jpg')
+            if args.gpu >= 0:
+                model.to_cpu()
+            write_image(model.y.data[0].copy(),
+                        'images/test' + str(i) + 'y.jpg')
             x_batch[0] = model.y.data[0].copy()
-            if args.gpu >= 0:model.to_gpu()
+            if args.gpu >= 0:
+                model.to_gpu()
 
 else:
+    with(open(log_filename, 'w')) as f:
+        f.write('time,epoch,loss\n')
     count = 0
     seq = 0
     while count < args.period:
@@ -159,35 +181,53 @@ else:
         loss = 0
 
         batchSize = 1
-        x_batch = np.ndarray((batchSize, args.channels[0], args.size[1], args.size[0]), dtype=np.float32)
-        y_batch = np.ndarray((batchSize, args.channels[0], args.size[1], args.size[0]), dtype=np.float32)
-        x_batch[0] = read_image(imagelist[0]);
+        image_batch_size = (batchSize, args.channels[0],
+                            args.size[1], args.size[0])
+        x_batch = np.ndarray(image_batch_size, dtype=np.float32)
+        y_batch = np.ndarray(image_batch_size, dtype=np.float32)
+        x_batch[0] = read_image(imagelist[0])
         for i in range(1, len(imagelist)):
-            y_batch[0] = read_image(imagelist[i]);
+            y_batch[0] = read_image(imagelist[i])
             loss += model(chainer.Variable(xp.asarray(x_batch)),
                           chainer.Variable(xp.asarray(y_batch)))
 
-            print('frameNo:' + str(i))
+            print(str(count) + ':frameNo:' + str(i))
             if (i + 1) % args.bprop == 0:
                 model.zerograds()
                 loss.backward()
                 loss.unchain_backward()
                 loss = 0
                 optimizer.update()
-                if args.gpu >= 0:model.to_cpu()
-                write_image(x_batch[0].copy(), 'images/' + str(count) + '_' + str(seq) + '_' + str(i) + 'x.jpg')
-                write_image(model.y.data[0].copy(), 'images/' + str(count) + '_' + str(seq) + '_' + str(i) + 'y.jpg')
-                write_image(y_batch[0].copy(), 'images/' + str(count) + '_' + str(seq) + '_' + str(i) + 'z.jpg')
-                if args.gpu >= 0:model.to_gpu()
                 print('loss:' + str(float(model.loss.data)))
+                with(open(log_filename, 'a')) as f:
+                    f.write(datetime.now().strftime('%Y/%m/%d %H:%M:%S') +
+                            ',' + str(count) + ',' +
+                            str(float(model.loss.data)) + '\n')
 
-            if (count%args.save) == 0:
+            if count % args.saveimage == 0:
+                if args.gpu >= 0:
+                    model.to_cpu()
+                write_image(x_batch[0].copy(), 'images/' +
+                            str(count) + '_' + str(seq) + '_' + str(i) +
+                            'x.jpg')
+                write_image(model.y.data[0].copy(), 'images/' +
+                            str(count) + '_' + str(seq) + '_' + str(i) +
+                            'y.jpg')
+                write_image(y_batch[0].copy(), 'images/' +
+                            str(count) + '_' + str(seq) + '_' + str(i) +
+                            'z.jpg')
+                if args.gpu >= 0:
+                    model.to_gpu()
+
+            if (count % args.save) == 0:
                 print('save the model')
-                serializers.save_npz('models/' + str(count) + '.model', model)
+                serializers.save_npz('models/' + str(count) +
+                                     '.model', model)
                 print('save the optimizer')
-                serializers.save_npz('models/' + str(count) + '.state', optimizer)
+                serializers.save_npz('models/' + str(count) +
+                                     '.state', optimizer)
 
             x_batch[0] = y_batch[0]
             count += 1
-        
-        seq = (seq + 1)%len(sequencelist)
+
+        seq = (seq + 1) % len(sequencelist)
