@@ -9,17 +9,17 @@ from chainer import cuda
 import chainer.links as L
 from chainer import optimizers
 from chainer import serializers
-# from chainer.Functions.loss.mean_squared_error import mean_squared_error
+from chainer.functions.loss.mean_squared_error import mean_squared_error
 import net
-from mean_absolute_error import mean_absolute_error
 
 parser = argparse.ArgumentParser(description='PredNet')
 parser.add_argument('--images', '-i', default='',
                     help='Path to image list file')
 parser.add_argument('--sequences', '-seq', default='',
                     help='Path to sequence list file')
-parser.add_argument('--gpu', '-g', default=-1, type=int,
-                    help='GPU ID (negative value indicates CPU)')
+parser.add_argument('--gpu', '-g', default=-1,
+                    help='GPU ID on each layers '
+                    + '(negative value indicates CPU)')
 parser.add_argument('--root', '-r', default='.',
                     help='Root directory path of sequence and image files')
 parser.add_argument('--initmodel', default='',
@@ -55,6 +55,9 @@ if (not args.images) and (not args.sequences):
 args.size = args.size.split(',')
 for i in range(len(args.size)):
     args.size[i] = int(args.size[i])
+args.gpu = args.gpu.split(',')
+for i in range(len(args.gpu)):
+    args.gpu[i] = int(args.gpu[i])
 args.channels = args.channels.split(',')
 for i in range(len(args.channels)):
     args.channels[i] = int(args.channels[i])
@@ -62,21 +65,22 @@ args.offset = args.offset.split(',')
 for i in range(len(args.offset)):
     args.offset[i] = int(args.offset[i])
 
-if args.gpu >= 0:
+if args.gpu[0] >= 0:
     cuda.check_cuda_available()
-xp = cuda.cupy if args.gpu >= 0 else np
+xp = cuda.cupy if args.gpu[0] >= 0 else np
 
 # Create Model
 prednet = net.PredNet(args.size[0], args.size[1], args.channels)
-# model = L.Classifier(prednet, lossfun=mean_squared_error)
-model = L.Classifier(prednet, lossfun=mean_absolute_error)
+model = L.Classifier(prednet, lossfun=mean_squared_error)
 model.compute_accuracy = False
 optimizer = optimizers.Adam()
 optimizer.setup(model)
 
-if args.gpu >= 0:
-    cuda.get_device(args.gpu).use()
+if args.gpu[0] >= 0:
+    cuda.get_device(args.gpu[0]).use()
     model.to_gpu()
+    if 1 < len(args.gpu):
+        prednet.to_gpu(args.gpu)
     print('Running on a GPU')
 else:
     print('Running on a CPU')
@@ -143,18 +147,18 @@ if args.test is True:
                           chainer.Variable(xp.asarray(y_batch)))
             loss.unchain_backward()
             loss = 0
-            if args.gpu >= 0:
+            if args.gpu[0] >= 0:
                 model.to_cpu()
             write_image(x_batch[0].copy(), 'images/test' + str(i) + 'x.jpg')
             write_image(model.y.data[0].copy(),
                         'images/test' + str(i) + 'y.jpg')
-            if args.gpu >= 0:
+            if args.gpu[0] >= 0:
                 model.to_gpu()
 
-        if args.gpu >= 0:
+        if args.gpu[0] >= 0:
             model.to_cpu()
         x_batch[0] = model.y.data[0].copy()
-        if args.gpu >= 0:
+        if args.gpu[0] >= 0:
             model.to_gpu()
         for i in range(len(imagelist), len(imagelist) + args.ext):
             print('extended frameNo:' + str(i))
@@ -162,12 +166,12 @@ if args.test is True:
                           chainer.Variable(xp.asarray(y_batch)))
             loss.unchain_backward()
             loss = 0
-            if args.gpu >= 0:
+            if args.gpu[0] >= 0:
                 model.to_cpu()
             write_image(model.y.data[0].copy(),
                         'images/test' + str(i) + 'y.jpg')
             x_batch[0] = model.y.data[0].copy()
-            if args.gpu >= 0:
+            if args.gpu[0] >= 0:
                 model.to_gpu()
 
 else:
@@ -205,7 +209,7 @@ else:
                             str(float(model.loss.data)) + '\n')
 
             if count % args.saveimage == 0:
-                if args.gpu >= 0:
+                if args.gpu[0] >= 0:
                     model.to_cpu()
                 write_image(x_batch[0].copy(), 'images/' +
                             str(count) + '_' + str(seq) + '_' + str(i) +
@@ -216,7 +220,7 @@ else:
                 write_image(y_batch[0].copy(), 'images/' +
                             str(count) + '_' + str(seq) + '_' + str(i) +
                             'z.jpg')
-                if args.gpu >= 0:
+                if args.gpu[0] >= 0:
                     model.to_gpu()
 
             if (count % args.save) == 0:

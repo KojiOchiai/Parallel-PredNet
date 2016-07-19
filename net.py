@@ -264,47 +264,52 @@ class PredNet(chainer.Chain):
             w = w / 2
             h = h / 2
 
-        self.Layer0 = PredBottomLayer(self.sizes[0][3], self.sizes[0][2],
-                                      (self.sizes[0][1], self.sizes[1][1]))
+        self.add_link('Layer0',
+                      PredBottomLayer(self.sizes[0][3],
+                                      self.sizes[0][2],
+                                      (self.sizes[0][1],
+                                       self.sizes[1][1])))
         for nth in range(1, self.layers - 1):
-            setattr(self, 'Layer' + str(nth),
-                    PredLayer(self.sizes[nth][3], self.sizes[nth][2],
-                              (self.sizes[nth][1], self.sizes[nth + 1][1])))
+            self.add_link('Layer' + str(nth),
+                          PredLayer(self.sizes[nth][3],
+                                    self.sizes[nth][2],
+                                    (self.sizes[nth][1],
+                                     self.sizes[nth + 1][1])))
         nth = self.layers - 1
-        setattr(self, 'Layer' + str(nth),
-                PredTopLayer(self.sizes[nth][3], self.sizes[nth][2],
-                             self.sizes[nth][1]))
+        self.add_link('Layer' + str(nth),
+                      PredTopLayer(self.sizes[nth][3], self.sizes[nth][2],
+                                   self.sizes[nth][1]))
         self.reset_state()
 
     def to_cpu(self):
         super(PredNet, self).to_cpu()
         for nth in range(self.layers - 1):
-            getattr(self, 'A' + str(nth)).to_cpu()
+            getattr(self, 'A' + str(nth + 1)).to_cpu()
             getattr(self, 'R' + str(nth)).to_cpu()
             getattr(self, 'Layer' + str(nth)).to_cpu()
         nth = self.layers - 1
-        getattr(self, 'A' + str(nth)).to_cpu()
         getattr(self, 'Layer' + str(nth)).to_cpu()
 
     def to_gpu(self, device=None):
-        if isinstance(device, int) or device is None:
+        if device is None:
+            super(PredNet, self).to_gpu(device)
+            if not isinstance(self.devices[0], int):
+                self.devices = [device] * self.layers
+        elif isinstance(device, int):
             super(PredNet, self).to_gpu(device)
             self.devices = [device] * self.layers
         else:
             super(PredNet, self).to_gpu(device[0])
             self.devices = device
+
         for nth in range(self.layers - 1):
-            getattr(self, 'A' + str(nth)).to_gpu(self.devices[nth])
+            getattr(self, 'A' + str(nth + 1)).to_gpu(self.devices[nth + 1])
             getattr(self, 'R' + str(nth)).to_gpu(self.devices[nth])
             getattr(self, 'Layer' + str(nth)).to_gpu(self.devices[nth])
         nth = self.layers - 1
-        getattr(self, 'A' + str(nth)).to_gpu(self.devices[nth])
         getattr(self, 'Layer' + str(nth)).to_gpu(self.devices[nth])
 
     def reset_state(self):
-        self.A0 = variable.Variable(
-                    self.xp.zeros(self.sizes[0], dtype=numpy.float32),
-                    volatile='auto')
         for nth in range(self.layers - 1):
             setattr(self, 'A' + str(nth + 1),
                     variable.Variable(
@@ -323,23 +328,23 @@ class PredNet(chainer.Chain):
         R = [None] * (self.layers - 1)
 
         # update layers
-        A[0] = self.Layer0(x, self.R0)
+        A[1] = self.Layer0(x, self.R0)
         for nth in range(1, self.layers - 1):
-            (R[nth - 1], A[nth]) = getattr(self, 'Layer' + str(nth))(
+            (R[nth - 1], A[nth + 1]) = getattr(self, 'Layer' + str(nth))(
                                       getattr(self, 'A' + str(nth)),
                                       getattr(self, 'R' + str(nth)))
         nth = self.layers - 1
         R[nth - 1] = getattr(self, 'Layer' + str(nth))(
                         getattr(self, 'A' + str(nth)))
 
-        if isinstance(x.data, numpy.ndarray):
+        if isinstance(x.data, numpy.ndarray) or self.devices[nth] is None:
             for nth in range(self.layers - 1):
-                setattr(self, 'A' + str(nth + 1), A[nth])
+                setattr(self, 'A' + str(nth + 1), A[nth + 1])
                 setattr(self, 'R' + str(nth), R[nth])
         else:
             for nth in range(self.layers - 1):
                 setattr(self, 'A' + str(nth + 1),
-                        F.copy(A[nth], self.devices[nth + 1]))
+                        F.copy(A[nth + 1], self.devices[nth + 1]))
                 setattr(self, 'R' + str(nth),
                         F.copy(R[nth], self.devices[nth]))
 
