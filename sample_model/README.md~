@@ -1,5 +1,0 @@
-# sample model
-
-# to use
-$ python main.py -g 0 --test -i ./dataset/2011_09_26_drive_0001_extract.txt --initmodel sample_model/100000.model 
-
