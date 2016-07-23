@@ -4,11 +4,11 @@ This is a implimentation of [PredNet][] on chainer.
 [PredNet]: http://arxiv.org/abs/1605.08104 "Lotter, William, Gabriel Kreiman, and David Cox. \"Deep Predictive Coding Networks for Video Prediction and Unsupervised Learning.\" arXiv preprint arXiv:1605.08104 (2016)."
 
 #Testd on
-*Ubuntu 14.04  
-*Python 2.7.6  
-*chainer 1.9.1  
-*CUDA Toolkit 7.5  
-*cuDNN v5  
+* Ubuntu 14.04  
+* Python 2.7.6  
+* chainer 1.9.1  
+* CUDA Toolkit 7.5  
+* cuDNN v5  
 
 #Demo
 1. git clone  
