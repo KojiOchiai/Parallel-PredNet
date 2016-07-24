@@ -1,4 +1,5 @@
 import numpy
+import cupy
 import chainer
 import chainer.functions as F
 import chainer.links as L
@@ -133,32 +134,47 @@ class ConvLSTM(chainer.Chain):
 
 class PredLayer(chainer.Chain):
     def __init__(self, width, height, channels,
-                 r_channels=None, batchSize=1, pooling=2):
+                 r_channels=None, batchSize=1, pooling=2,
+                 istop=False, isbottom=False):
+        self.istop = istop
+        self.isbottom = isbottom
+        self.device = None
         if r_channels is None:
             r_channels = channels
         self.sizes = [None]*2
         w, h = width, height
-        for nth in range(2):
+        for nth in range(len(channels)):
             self.sizes[nth] = (batchSize, channels[nth], h, w)
             w = w / pooling
             h = h / pooling
 
-        nth = 0
-        super(PredLayer, self).__init__(
-                ConvA=L.Convolution2D(channels[nth] * 2,
-                                      channels[nth + 1],
-                                      3,
-                                      pad=1),
-                ConvP=L.Convolution2D(r_channels[nth],
-                                      channels[nth],
-                                      3,
-                                      pad=1),
-                ConvLSTM=ConvLSTM(self.sizes[nth][3],
-                                  self.sizes[nth][2],
-                                  (self.sizes[nth][1] * 2,
-                                   r_channels[nth + 1]),
-                                  r_channels[nth])
-        )
+        if self.istop:
+            super(PredLayer, self).__init__(
+                    ConvP=L.Convolution2D(r_channels[0],
+                                          channels[0],
+                                          3,
+                                          pad=1),
+                    ConvLSTM=ConvLSTM(self.sizes[0][3],
+                                      self.sizes[0][2],
+                                      (self.sizes[0][1] * 2,),
+                                      r_channels[0])
+            )
+        else:
+            super(PredLayer, self).__init__(
+                    ConvA=L.Convolution2D(channels[0] * 2,
+                                          channels[1],
+                                          3,
+                                          pad=1),
+                    ConvP=L.Convolution2D(r_channels[0],
+                                          channels[0],
+                                          3,
+                                          pad=1),
+                    ConvLSTM=ConvLSTM(self.sizes[0][3],
+                                      self.sizes[0][2],
+                                      (self.sizes[0][1] * 2,
+                                       r_channels[1]),
+                                      r_channels[0])
+            )
         self.reset_state()
 
     def to_cpu(self):
@@ -166,6 +182,7 @@ class PredLayer(chainer.Chain):
         self.P.to_cpu()
 
     def to_gpu(self, device=None):
+        self.device = device
         super(PredLayer, self).to_gpu(device)
         self.P.to_gpu(device)
 
@@ -175,76 +192,27 @@ class PredLayer(chainer.Chain):
                  volatile='auto')
         self.ConvLSTM.reset_state()
 
-    def __call__(self, bottom_up, top_down):
-        E = F.concat((F.relu(bottom_up - self.P), F.relu(self.P - bottom_up)))
-        A = F.max_pooling_2d(F.relu(self.ConvA(E)), 2, stride=2)
+    def __call__(self, bottom_up, top_down=None):
+        with cupy.cuda.Device(self.device):
+            E = F.concat((F.relu(bottom_up - self.P),
+                          F.relu(self.P - bottom_up)))
+            if self.istop:
+                A = None
+                R = self.ConvLSTM((E,))
+            else:
+                A = F.max_pooling_2d(F.relu(self.ConvA(E)), 2, stride=2)
+                unpooled = F.unpooling_2d(top_down, 2,
+                                          stride=2, cover_all=False)
+                R = self.ConvLSTM((E, unpooled))
 
-        unpooled = F.unpooling_2d(top_down, 2, stride=2, cover_all=False)
-        R = self.ConvLSTM((E, unpooled))
-        P = F.relu(self.ConvP(R))
-
-        self.P = P
-
-        return (R, A)
-
-
-class PredTopLayer(chainer.Chain):
-    def __init__(self, width, height, channels,
-                 r_channels=None, batchSize=1, pooling=2):
-        if r_channels is None:
-            r_channels = channels
-        w, h = width, height
-        self.sizes = (batchSize, channels, h, w)
-
-        super(PredTopLayer, self).__init__(
-                ConvP=L.Convolution2D(r_channels,
-                                      channels,
-                                      3,
-                                      pad=1),
-                ConvLSTM=ConvLSTM(self.sizes[3],
-                                  self.sizes[2],
-                                  (self.sizes[1] * 2,),
-                                  r_channels)
-        )
-        self.reset_state()
-
-    def to_cpu(self):
-        super(PredTopLayer, self).to_cpu()
-        self.P.to_cpu()
-
-    def to_gpu(self, device=None):
-        super(PredTopLayer, self).to_gpu(device)
-        self.P.to_gpu(device)
-
-    def reset_state(self):
-        self.P = variable.Variable(
-                 self.xp.zeros(self.sizes, dtype=numpy.float32),
-                 volatile='auto')
-        self.ConvLSTM.reset_state()
-
-    def __call__(self, bottom_up):
-        E = F.concat((F.relu(bottom_up - self.P), F.relu(self.P - bottom_up)))
-
-        R = self.ConvLSTM((E,))
-        P = F.relu(self.ConvP(R))
+            if self.isbottom:
+                P = F.clipped_relu(self.ConvP(R), 1.0)
+            else:
+                P = F.relu(self.ConvP(R))
 
         self.P = P
 
-        return R
-
-
-class PredBottomLayer(PredLayer):
-    def __init__(self, width, height, channels,
-                 r_channels=None, batchSize=1, pooling=2):
-        super(PredBottomLayer, self).__init__(
-                width, height, channels, r_channels, batchSize, pooling
-        )
-
-    def __call__(self, bottom_up, top_down):
-        (R, A) = super(PredBottomLayer, self).__call__(bottom_up, top_down)
-        self.P = F.clipped_relu(self.P, 1.0)
-
-        return A
+        return (A, R)
 
 
 class PredNet(chainer.Chain):
@@ -264,21 +232,20 @@ class PredNet(chainer.Chain):
             w = w / 2
             h = h / 2
 
-        self.add_link('Layer0',
-                      PredBottomLayer(self.sizes[0][3],
-                                      self.sizes[0][2],
-                                      (self.sizes[0][1],
-                                       self.sizes[1][1])))
-        for nth in range(1, self.layers - 1):
-            self.add_link('Layer' + str(nth),
-                          PredLayer(self.sizes[nth][3],
-                                    self.sizes[nth][2],
-                                    (self.sizes[nth][1],
-                                     self.sizes[nth + 1][1])))
-        nth = self.layers - 1
-        self.add_link('Layer' + str(nth),
-                      PredTopLayer(self.sizes[nth][3], self.sizes[nth][2],
-                                   self.sizes[nth][1]))
+        for nth in range(self.layers):
+            if nth == self.layers - 1:
+                self.add_link('Layer' + str(nth),
+                              PredLayer(self.sizes[nth][3],
+                                        self.sizes[nth][2],
+                                        (self.sizes[nth][1],),
+                                        istop=True))
+            else:
+                self.add_link('Layer' + str(nth),
+                              PredLayer(self.sizes[nth][3],
+                                        self.sizes[nth][2],
+                                        (self.sizes[nth][1],
+                                         self.sizes[nth + 1][1]),
+                                        isbottom=nth == 0))
         self.reset_state()
 
     def to_cpu(self):
@@ -323,20 +290,24 @@ class PredNet(chainer.Chain):
         getattr(self, 'Layer' + str(self.layers - 1)).reset_state()
 
     def __call__(self, x):
-        # copy data to device
         A = [None] * self.layers
         R = [None] * (self.layers - 1)
 
         # update layers
-        A[1] = self.Layer0(x, self.R0)
-        for nth in range(1, self.layers - 1):
-            (R[nth - 1], A[nth + 1]) = getattr(self, 'Layer' + str(nth))(
-                                      getattr(self, 'A' + str(nth)),
-                                      getattr(self, 'R' + str(nth)))
-        nth = self.layers - 1
-        R[nth - 1] = getattr(self, 'Layer' + str(nth))(
-                        getattr(self, 'A' + str(nth)))
+        for nth in range(self.layers):
+            if nth == 0 & nth == self.layers - 1:
+                (_, _) = self.Layer0(x)
+            elif nth == 0:
+                (A[1], _) = self.Layer0(x, self.R0)
+            elif nth == self.layers - 1:
+                (_, R[nth - 1]) = getattr(self, 'Layer' + str(nth))(
+                                    getattr(self, 'A' + str(nth)))
+            else:
+                (A[nth + 1], R[nth - 1]) = getattr(self, 'Layer' + str(nth))(
+                                          getattr(self, 'A' + str(nth)),
+                                          getattr(self, 'R' + str(nth)))
 
+        # copy data to device
         if isinstance(x.data, numpy.ndarray) or self.devices[nth] is None:
             for nth in range(self.layers - 1):
                 setattr(self, 'A' + str(nth + 1), A[nth + 1])
